@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "screenrec",
+  "version": "${version}",
+  "name": "Screen Recorder",
+  "description": "Запись экрана Minecraft в MP4 через FFmpeg. Клавиша R для старта/стопа.",
+  "authors": ["vizor"],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.vizor.screenrec.ScreenRecMod"]
+  },
+  "mixins": [
+    "screenrec.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.11.0",
+    "fabric": "*",
+    "minecraft": "~1.16.5"
+  }
+}

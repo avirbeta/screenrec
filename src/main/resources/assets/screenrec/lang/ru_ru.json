@@ -1,0 +1,7 @@
+{
+  "key.screenrec.toggle": "Запись экрана",
+  "category.screenrec": "Запись экрана",
+  "screenrec.recording": "Запись...",
+  "screenrec.stopped": "Запись остановлена: %s",
+  "screenrec.noffmpeg": "FFmpeg не найден! Установи FFmpeg."
+}
