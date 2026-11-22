@@ -1,16 +1,27 @@
-# Screen Recorder — Запись экрана Minecraft 1.16.5 (Fabric)
+# Screen Recorder — запись экрана Minecraft 1.16.5 (Fabric)
 
-Записывает весь экран Minecraft в MP4 видео через FFmpeg. Нажми R — запись пошла, снова R — стоп.
+Записывает **весь экран Minecraft** — мир, HUD, чат, инвентарь и меню — в MP4 через FFmpeg. Нажми **R** — запись пошла, снова R — стоп.
+
+## Что нового в 1.1.0
+
+- Исправлена гонка при старте: `recording` выставлялся после запуска pipe-потока, из-за чего запись могла не начаться.
+- Захват перенесён из `WorldRenderer.render` в `GameRenderer.render`: теперь в видео попадают GUI, чат и HUD, а не только 3D-мир.
+- FFmpeg ищется без команды `which` (её нет на Windows), с поддержкой `FFMPEG_PATH`.
+- Буферы кадров переиспользуются — меньше нагрузки на GC при 60 FPS.
+- Аккуратная остановка FFmpeg: ожидание завершения и закрытия файла.
+- В чат выводится длительность записи.
+- Добавлены CI-сборка и MIT-лицензия.
 
 ## Установка
 
-1. Установи [Fabric Loader](https://fabricmc.net/) для Minecraft 1.16.5
+1. Установи [Fabric Loader](https://fabricmc.net/) для Minecraft 1.16.5 и Fabric API `0.42.0+1.16`.
 2. Установи FFmpeg:
-   - **Linux**: `sudo apt install ffmpeg`
-   - **Windows**: скачай с [ffmpeg.org](https://ffmpeg.org/download.html) и добавь в PATH
-   - **Mac**: `brew install ffmpeg`
-3. Положи `screenrec-fabric-1.16.5-1.0.0.jar` и [Fabric API](https://modrinth.com/mod/fabric-api) в `mods/`
-4. Запусти Minecraft
+   - **Linux:** `sudo apt install ffmpeg`
+   - **Windows:** скачай с [ffmpeg.org](https://ffmpeg.org/download.html) и добавь в PATH
+   - **macOS:** `brew install ffmpeg`
+   - либо задай переменную `FFMPEG_PATH`
+3. Положи `screenrec-fabric-1.16.5-1.1.0.jar` в `mods/`.
+4. Запусти игру.
 
 ## Использование
 
@@ -18,58 +29,22 @@
 |---------|----------|
 | **R** | Начать / остановить запись |
 
-При старте записи в чате появится зелёное сообщение `Запись начата (R для стопа)`.
-При остановке — красное `Остановлено` с длительностью.
+Файлы сохраняются в `.minecraft/recordings/recording_ГГГГ-ММ-ДД_ЧЧ-ММ-СС.mp4`.
 
-## Что записывается
+Запись идёт в 60 FPS, H.264, без звука: `-preset ultrafast`, `-crf 23`.
 
-- Полный экран Minecraft — интерфейс, хотбар, чат,ולם, HUD — всё
-- 60 FPS
-- H.264 видео без звука
+## Сборка
 
-## Где файлы
-
-```
-.minecraft/recordings/
-├── recording_2026-08-26_15-30-00.mp4
-├── recording_2026-08-26_16-05-42.mp4
-└── ...
-```
-
-Имя файла: `recording_ГГГГ-ММ-ДД_ЧЧ-ММ-СС.mp4`
-
-## Настройка качества
-
-По умолчанию: CRF 23, ultrafast preset. Чтобы изменить — собери из исходников и отредактируй `Recorder.java`:
-
-| Параметр | Значение | Описание |
-|----------|----------|----------|
-| `-crf` | 23 | Качество (0-51, меньше = лучше) |
-| `-preset` | ultrafast | Скорость кодирования |
-| `-r` | 60 | FPS |
-
-Рекомендуемые пресеты:
-- **ultrafast** — минимум нагрузки, файлы больше
-- **fast** — баланс
-- **medium** — лучше качество, больше нагрузка
-
-## Требования
-
-- Minecraft 1.16.5
-- Fabric Loader 0.11+
-- Fabric API 0.42.0+1.16
-- Java 8+
-- **FFmpeg** (обязательно!)
-
-## Сборка из исходников
+Требуется JDK 17, Gradle 8.10 (wrapper в комплекте), Fabric Loom 1.8.13, yarn `1.16.5+build.10:v2`.
 
 ```bash
-git clone https://github.com/YOUR_NAME/screenrec.git
-cd screenrec
 ./gradlew build
-# jar будет в build/libs/
 ```
+
+Готовый мод: `build/libs/screenrec-fabric-1.16.5-1.1.0.jar`.
+
+CI на GitHub собирает jar на каждый push.
 
 ## Лицензия
 
-VizorVerze
+MIT — см. [LICENSE](LICENSE).

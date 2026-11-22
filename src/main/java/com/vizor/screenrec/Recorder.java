@@ -1,28 +1,33 @@
 package com.vizor.screenrec;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.ProcessBuilder;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+
 import net.fabricmc.loader.api.FabricLoader;
 
 public final class Recorder {
 
     private static Process ffmpeg;
     private static OutputStream ffmpegIn;
-    private static Thread writerThread;
+    private static Thread pipeThread;
+    private static Thread errThread;
     private static volatile boolean recording = false;
 
     private static int recWidth;
     private static int recHeight;
     private static long startTimeMs;
+    private static volatile long lastDurationMs;
 
     private static final BlockingQueue<byte[]> QUEUE = new ArrayBlockingQueue<>(120);
+    private static final BlockingQueue<byte[]> FREE = new ArrayBlockingQueue<>(120);
+    private static volatile String ffmpegPathCache;
 
     private Recorder() {
     }
@@ -31,23 +36,33 @@ public final class Recorder {
         return recording;
     }
 
+    public static long getElapsedMs() {
+        return recording ? System.currentTimeMillis() - startTimeMs : lastDurationMs;
+    }
+
+    public static long getLastDurationMs() {
+        return lastDurationMs;
+    }
+
     public static synchronized boolean start(int width, int height) {
         if (recording) return false;
-        if (!findFfmpeg()) return false;
+        if (width <= 0 || height <= 0) return false;
+
+        String ffmpegPath = findFfmpegPath();
+        if (ffmpegPath == null) return false;
 
         recWidth = width;
         recHeight = height;
-        LocalDateTime now = LocalDateTime.now();
-        String ts = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
-        String fileName = "recording_" + ts + ".mp4";
-        java.io.File outDir = new java.io.File(
-                FabricLoader.getInstance().getGameDir().toFile(), "recordings");
-        outDir.mkdirs();
-        java.io.File outFile = new java.io.File(outDir, fileName);
 
-        try {
-            String ffmpegPath = findFfmpegPath();
-            String[] cmd = new String[]{
+        String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
+        File outDir = new File(FabricLoader.getInstance().getGameDir().toFile(), "recordings");
+        if (!outDir.mkdirs() && !outDir.isDirectory()) {
+            System.err.println("[screenrec] Не удалось создать папку recordings");
+            return false;
+        }
+        File outFile = new File(outDir, "recording_" + ts + ".mp4");
+
+        String[] cmd = new String[]{
                 ffmpegPath,
                 "-y",
                 "-f", "rawvideo",
@@ -61,73 +76,90 @@ public final class Recorder {
                 "-pix_fmt", "yuv420p",
                 "-crf", "23",
                 outFile.getAbsolutePath()
-            };
+        };
 
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
+        try {
+            QUEUE.clear();
+            FREE.clear();
+
+            Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
             ffmpeg = p;
             ffmpegIn = p.getOutputStream();
 
-            writerThread = new Thread(() -> {
+            // recording=true ДО старта потоков, иначе pipe-поток сразу выйдет
+            // из while (recording) и закроет stdin, не записав ни одного кадра.
+            recording = true;
+            startTimeMs = System.currentTimeMillis();
+            lastDurationMs = 0L;
+
+            errThread = new Thread(() -> {
                 try {
-                    InputStream err = p.getInputStream();
+                    InputStream out = p.getInputStream();
                     byte[] buf = new byte[1024];
-                    while (err.read(buf) != -1) {
+                    while (out.read(buf) != -1) {
+                        // читаем, чтобы FFmpeg не блокировался на переполненном буфере
                     }
                 } catch (IOException ignored) {
                 }
-            }, "ffmpeg-stderr");
-            writerThread.setDaemon(true);
-            writerThread.start();
+            }, "screenrec-ffmpeg-log");
+            errThread.setDaemon(true);
+            errThread.start();
 
-            Thread pipeThread = new Thread(() -> {
+            pipeThread = new Thread(() -> {
                 try {
-                    while (recording) {
-                        byte[] frame = QUEUE.poll(500, TimeUnit.MILLISECONDS);
-                        if (frame != null) {
-                            ffmpegIn.write(frame);
-                            ffmpegIn.flush();
+                    while (true) {
+                        byte[] frame = QUEUE.poll(200, TimeUnit.MILLISECONDS);
+                        if (frame == null) {
+                            if (!recording) break;
+                            continue;
                         }
+                        ffmpegIn.write(frame);
+                        FREE.offer(frame);
                     }
-                } catch (IOException | InterruptedException ignored) {
+                } catch (Exception ignored) {
                 }
                 try {
                     ffmpegIn.close();
                 } catch (IOException ignored) {
                 }
-                try {
-                    p.waitFor();
-                } catch (InterruptedException ignored) {
-                }
-            }, "ffmpeg-pipe");
+            }, "screenrec-ffmpeg-pipe");
             pipeThread.setDaemon(true);
             pipeThread.start();
 
-            recording = true;
-            startTimeMs = System.currentTimeMillis();
             System.out.println("[screenrec] Запись начата: " + outFile.getAbsolutePath());
             return true;
 
         } catch (Exception e) {
             System.err.println("[screenrec] Ошибка запуска FFmpeg: " + e);
-            stop();
+            recording = false;
+            cleanup();
             return false;
         }
     }
 
     public static synchronized void stop() {
-        if (!recording) return;
+        if (!recording) {
+            cleanup();
+            return;
+        }
+        lastDurationMs = System.currentTimeMillis() - startTimeMs;
         recording = false;
         QUEUE.clear();
 
-        long ms = System.currentTimeMillis() - startTimeMs;
-        int sec = (int) (ms / 1000);
-        int min = sec / 60;
-        sec = sec % 60;
-        int frames = (int) ((ms / 1000.0) * 60);
-        System.out.println("[screenrec] Запись остановлена. Длительность: " + min + "м " + sec + "с");
+        try {
+            if (pipeThread != null) {
+                pipeThread.join(3000);
+            }
+        } catch (InterruptedException ignored) {
+        }
 
+        cleanup();
+
+        long sec = getElapsedMs() / 1000L;
+        System.out.println("[screenrec] Запись остановлена. Длительность: " + (sec / 60) + "м " + (sec % 60) + "с");
+    }
+
+    private static void cleanup() {
         try {
             if (ffmpegIn != null) {
                 ffmpegIn.close();
@@ -135,13 +167,20 @@ public final class Recorder {
         } catch (IOException ignored) {
         }
         try {
-            if (ffmpeg != null) {
+            if (ffmpeg != null && !ffmpeg.waitFor(5, TimeUnit.SECONDS)) {
                 ffmpeg.destroy();
+                if (!ffmpeg.waitFor(2, TimeUnit.SECONDS)) {
+                    ffmpeg.destroyForcibly();
+                }
             }
         } catch (Exception ignored) {
         }
         ffmpeg = null;
         ffmpegIn = null;
+        pipeThread = null;
+        errThread = null;
+        QUEUE.clear();
+        FREE.clear();
     }
 
     public static void grabFrame(int width, int height, java.nio.ByteBuffer pixelBuffer) {
@@ -149,39 +188,50 @@ public final class Recorder {
         if (width != recWidth || height != recHeight) return;
 
         int size = width * height * 4;
-        byte[] frame = new byte[size];
+        byte[] frame = FREE.poll();
+        if (frame == null || frame.length != size) {
+            frame = new byte[size];
+        }
         pixelBuffer.position(0);
         pixelBuffer.get(frame);
 
         if (!QUEUE.offer(frame)) {
-            // очередь полна — пропускаем кадр чтобы не тормозить
+            // очередь полна — возвращаем буфер в пул, кадр пропускаем
+            FREE.offer(frame);
         }
     }
 
     public static boolean findFfmpeg() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("which", "ffmpeg");
-            Process p = pb.start();
-            int exit = p.waitFor();
-            return exit == 0;
-        } catch (Exception e) {
-            return false;
-        }
+        return findFfmpegPath() != null;
     }
 
     private static String findFfmpegPath() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("which", "ffmpeg");
-            Process p = pb.start();
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(p.getInputStream()));
-            String line = r.readLine();
-            p.waitFor();
-            if (line != null && !line.trim().isEmpty()) {
-                return line.trim();
-            }
-        } catch (Exception ignored) {
+        String cached = ffmpegPathCache;
+        if (cached != null) return cached;
+
+        String env = System.getenv("FFMPEG_PATH");
+        if (env != null && new File(env).canExecute()) {
+            ffmpegPathCache = env;
+            return env;
         }
-        return "ffmpeg";
+
+        String[] candidates = {
+                "ffmpeg",
+                "/usr/bin/ffmpeg",
+                "/usr/local/bin/ffmpeg",
+                "C:\\ffmpeg\\bin\\ffmpeg.exe"
+        };
+        for (String candidate : candidates) {
+            try {
+                Process p = new ProcessBuilder(candidate, "-version").start();
+                if (p.waitFor(1000, TimeUnit.MILLISECONDS) && p.exitValue() == 0) {
+                    ffmpegPathCache = candidate;
+                    return candidate;
+                }
+                p.destroyForcibly();
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 }

@@ -34,9 +34,10 @@ public class ScreenRecMod implements ClientModInitializer {
     private static void toggle(MinecraftClient client) {
         if (Recorder.isRecording()) {
             Recorder.stop();
+            long sec = Recorder.getLastDurationMs() / 1000L;
             if (client.player != null) {
                 client.player.sendMessage(
-                        new LiteralText("§c[Запись] §fОстановлено"), true);
+                        new LiteralText("§c[Запись] §fОстановлено (" + (sec / 60) + "м " + (sec % 60) + "с)"), true);
             }
         } else {
             if (!Recorder.findFfmpeg()) {
